@@ -1,0 +1,29 @@
+# Music Assistant on the Pi. Start with:  docker compose up -d
+# YouTube Music's PO token server as well:  docker compose --profile ytmusic up -d
+# Update:  docker compose pull && docker compose up -d
+
+services:
+  music-assistant-server:
+    image: ghcr.io/music-assistant/server:latest  # stable channel; don't switch to beta on the same data
+    container_name: music-assistant-server
+    restart: unless-stopped
+    # Host networking is required for Cast discovery (mDNS) and for the soundbar to
+    # fetch the audio stream from MA on port 8097. The web UI and API are on 8095.
+    network_mode: host
+    volumes:
+      - ${USERDIR:-$HOME}/docker/music-assistant-server/data:/data/
+      # Later, for downloaded FLACs (local files provider): uncomment and point at the folder.
+      # - /srv/music:/media:ro
+    environment:
+      - LOG_LEVEL=info  # critical, error, warning, info, debug
+
+  # Only needed for the YouTube Music provider. MA's docs require version 1.2.1.
+  # MA's default PO token server URL, http://127.0.0.1:4416, reaches this from host networking.
+  po-token-server:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.2.1
+    container_name: po-token-server
+    restart: unless-stopped
+    init: true
+    ports:
+      - 127.0.0.1:4416:4416
+    profiles: [ytmusic]

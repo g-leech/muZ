@@ -1,0 +1,3 @@
+index_ID,title,artist,column,uri,used,status,problems,found_title,found_artist,streamable
+3,Welcome Interstate Managers,Fountains of Wayne,fallback_uri,bandcamp://album/724446940-2229563677,,unplayable,0/0 tracks streamable,Welcome Interstate Managers,Fountains of Wayne,0/0
+1,Have One On Me,Joanna Newsom,fallback_uri,bandcamp://album/1190660842-2824403696,yes,partial,1/18 tracks streamable,Have One On Me,Joanna Newsom,1/18
