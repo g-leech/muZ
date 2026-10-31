@@ -1,2 +1,3 @@
 server/ma.env
 device/secrets.py
+device/covers/

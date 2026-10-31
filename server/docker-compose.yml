@@ -28,6 +28,17 @@ services:
       - ./beacon.py:/beacon.py:ro
     command: ["python3", "-u", "/beacon.py"]
 
+  # Serves device/albums.json and device/covers/*.jpg on port 8099. The Presto
+  # downloads each cover when it shows it. Rebuild with tools/prep_covers.py.
+  covers:
+    image: python:3.13-alpine
+    container_name: albumbox-covers
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ../device:/srv:ro
+    command: ["python3", "-m", "http.server", "8099", "--directory", "/srv"]
+
   # Only needed for the YouTube Music provider. MA's docs require version 1.2.1.
   # MA's default PO token server URL, http://127.0.0.1:4416, reaches this from host networking.
   po-token-server:

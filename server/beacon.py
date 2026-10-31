@@ -3,7 +3,8 @@
 
 Every BEACON_INTERVAL seconds, broadcasts one UDP datagram to port BEACON_PORT:
 
-    {"service": "albumbox", "url": "http://192.168.1.236:8095"}
+    {"service": "albumbox", "url": "http://192.168.1.236:8095",
+     "covers": "http://192.168.1.236:8099"}
 
 It also answers the datagram b"albumbox?" (sent by the Presto at boot, so it
 need not wait for the next broadcast) with the same payload, sent back to the asker.
@@ -18,6 +19,7 @@ import time
 PORT = int(os.environ.get("BEACON_PORT", "50505"))
 INTERVAL = float(os.environ.get("BEACON_INTERVAL", "5"))
 MA_PORT = int(os.environ.get("MA_PORT", "8095"))
+COVERS_PORT = int(os.environ.get("COVERS_PORT", "8099"))
 QUERY = b"albumbox?"
 
 
@@ -29,7 +31,9 @@ def lan_ip():
 
 
 def payload():
-    return json.dumps({"service": "albumbox", "url": f"http://{lan_ip()}:{MA_PORT}"}).encode()
+    ip = lan_ip()
+    return json.dumps({"service": "albumbox", "url": f"http://{ip}:{MA_PORT}",
+                       "covers": f"http://{ip}:{COVERS_PORT}"}).encode()
 
 
 def main():

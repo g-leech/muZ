@@ -51,23 +51,20 @@ Content-Type: application/json
 
 ## Device behaviour (Presto, MicroPython)
 
-- On boot: connect to Wi-Fi (reconnect if it drops), load `albums.json`, show a random cover.
+- On boot: connect to Wi-Fi (reconnect if it drops), find the Pi, download `albums.json` from it, show a random cover.
 - Shuffle-bag: no repeats until every album has been shown, then reshuffle.
 - Qwiic Button press or a screen tap: send the play command for the album on screen.
 - Swipe, or a timer (suggested: every 30 minutes): show the next cover.
 - LEDs: brief green on HTTP 200, red on failure or timeout.
-- Finding the Pi: listen on UDP 50505 for `{"service": "albumbox", "url": "http://<ip>:8095"}` (broadcast every 5 s by `server/beacon.py`); at boot, broadcast `albumbox?` to 255.255.255.255:50505 for an immediate reply. Cache the last URL; switch when a different one arrives.
+- Finding the Pi: listen on UDP 50505 for `{"service": "albumbox", "url": "http://<ip>:8095", "covers": "http://<ip>:8099"}` (broadcast every 5 s by `server/beacon.py`); at boot, broadcast `albumbox?` to 255.255.255.255:50505 for an immediate reply. Cache the last URL; switch when a different one arrives.
 - HTTP timeout for the play command: about 60 s (MA can take 30 s+ to fail when no track is playable, then returns HTTP 500).
 - `secrets.py` holds Wi-Fi SSID/password, MA token, queue_id and an optional fallback MA URL. Keep it out of git.
 
 ## Covers
 
 - `albums.json`: `[{"uri": "spotify://album/<id>", "artist": "...", "title": "...", "cover": "covers/<id>.jpg"}]`
-- Built on the laptop by `tools/prep_covers.py` from a plain list of Spotify album URLs:
-  - fetch artwork via MA (`music/item_by_uri`) or Spotify's oEmbed endpoint (`https://open.spotify.com/oembed?url=<album url>`, no auth, but only a ~300 px thumbnail);
-  - resize/crop to 480×480;
-  - save as **baseline (non-progressive) JPEG**, since microcontroller JPEG decoders handle progressive files badly or not at all.
-- Copy to the Presto's flash, or to microSD if the set outgrows flash.
+- Built by `tools/prep_covers.py` from `index.csv`, `lookup.csv` and `album_art/` (already 480×480): picks each album's first URI whose provider is set up in MA (`--providers`, default `spotify`), writes `device/albums.json` and `device/covers/<index_ID>.jpg` as **baseline (non-progressive) JPEG**, since microcontroller JPEG decoders handle progressive files badly or not at all.
+- **Served by the Pi, not stored on the Presto** (128 MB for 2,130 albums wouldn't fit in flash). The `covers` service in `server/docker-compose.yml` serves `device/` on port 8099. The Presto downloads `albums.json` at boot and each cover (~60 KB) into RAM when it shows it, then decodes from memory. Re-run `prep_covers.py` on the Pi to change the set; no need to touch the Presto.
 
 ## Known risks: test these before writing firmware
 
@@ -80,7 +77,7 @@ Content-Type: application/json
 
 1. `server/docker-compose.yml` and `server/SETUP.md`: MA install, Spotify provider, Google Cast provider, creating the token.
 2. `server/wake_test.sh`: curl the play command with the soundbar in standby; record whether it wakes.
-3. `tools/prep_covers.py` (Python 3 + Pillow, runs on the laptop) → `device/covers/*.jpg` and `device/albums.json`.
+3. `tools/prep_covers.py` (Python 3 + Pillow, run on the Pi) → `device/covers/*.jpg` and `device/albums.json`, served on port 8099.
 4. `device/main.py` (Presto MicroPython): display, shuffle-bag, Qwiic Button over I²C, touch, POST to MA, LEDs, Wi-Fi reconnect. Check Pimoroni's current Presto firmware and examples for the display, touch, LED and JPEG APIs before writing code.
 
 ## Parts list (The Pi Hut prices, October 2026)

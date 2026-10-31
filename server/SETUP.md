@@ -109,9 +109,9 @@ curl -sS http://<pi-ip>:8095/api \
        "args": {"queue_id": "<player_id>", "media": "spotify://album/<id>"}}'
 ```
 
-## 7. Beacon check
+## 7. Beacon and cover server check
 
-`docker logs albumbox-beacon` shows the address it announces. To query it as the Presto will:
+`docker logs albumbox-beacon` shows the address it announces. It also announces the cover server (`covers` service, port 8099, serving `../device/`); check it with `curl -I http://<pi-ip>:8099/albums.json`. To query it as the Presto will:
 
 ```sh
 python3 -c 'import socket; s=socket.socket(2,2); s.setsockopt(1,6,1); s.settimeout(3); s.sendto(b"albumbox?",("255.255.255.255",50505)); print(s.recvfrom(256))'
