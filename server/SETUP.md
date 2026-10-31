@@ -5,7 +5,7 @@ Checked against Music Assistant (MA) 2.10.9, the stable release on 30 October 20
 ## 1. Pi and network
 
 1. Flash **Raspberry Pi OS Lite (64-bit)** with Raspberry Pi Imager. In its settings, set a hostname (e.g. `albumbox`), your user, and an SSH key. Skip Wi-Fi if the Pi will be wired.
-2. Plug the Pi into the router. In the router, give it a **DHCP reservation**; the Presto hard-codes its address.
+2. Plug the Pi into the router if you can. Starlink's router can't reserve addresses, so the Pi's IP may change; `beacon.py` (started with MA) broadcasts the current address on UDP 50505 and the Presto follows it.
 3. Put the soundbar on **5 GHz**. The Pi, the soundbar and the Presto must be on one flat network: no guest Wi-Fi, client isolation or IoT VLAN between them. MA's docs call this the commonest cause of support requests.
 4. On the Pi:
 
@@ -35,6 +35,8 @@ The data folder is `~/docker/music-assistant-server/data`. Back it up once the s
 MA adds the Google Cast, AirPlay, DLNA, Sendspin and Sonos player providers on first start. The soundbar should appear under Players within a minute. If it doesn't, make sure it shows up as a Cast target on a phone first (Chromecast built-in may need setting up in the Google Home app).
 
 - **Disable the AirPlay and DLNA player providers.** MA merges a device it finds over several protocols into one player and could pick AirPlay, which plays silently on Samsung bars. Sonos can go too.
+- MA 2.10 wraps a device it finds over several protocols in one **universal player** (here `up86061fd1`, still labelled "Q (AirPlay)" after AirPlay is disabled). The Cast player underneath is hidden from the player filter and the API. Target the universal player; with AirPlay off, its only output is Chromecast.
+- **Cast fails while the soundbar is on its BT input** (`pychromecast … [SSL: BAD_LENGTH]` in the log, player stays idle). Switch it to the Wi-Fi input. Don't pair the Pi with the bar over Bluetooth.
 - Leave the soundbar's player settings (HTTP profile, output codec) at their defaults to start with. If playback stops mid-track, change one thing at a time: output codec **MP3**, then HTTP profile **Profile 2 - no content length**, then **Profile 1 - chunked**.
 
 ## 4. Music sources
@@ -54,7 +56,9 @@ How the albums in `lookup.csv` split by first available source:
 
 1. Add Spotify and sign in. Keep the default engine, **librespot**.
 2. Approve playback once: MA asks you to do this from the Spotify app on a phone on the same network.
-3. Test (step 6). If nothing plays and the log shows `Key Error`, the account is too new for librespot. Switch the engine to **Spotify Soloist**: accept Spotify's terms, create a Soloist API key on Spotify's page (Premium only), paste it into MA, then in the Spotify app open the device picker and choose "Music Assistant Pairing". Afterwards, don't control playback from the Spotify app ("Music Assistant Playback" device); it interferes.
+3. Test (step 6). If nothing plays and the log shows `Key Error` or `librespot_core::audio_key] error audio key 0 1`, librespot is blocked for this account. (On 31 October 2026 this hit an account older than December 2024 too, so don't rely on account age.) Switch the engine to **Spotify Soloist**: accept Spotify's terms, create a Soloist API key on Spotify's page (Premium only), paste it into MA, then in the Spotify app open the device picker and choose "Music Assistant Pairing". Afterwards, don't control playback from the Spotify app ("Music Assistant Playback" device); it interferes.
+
+   Pairing notes: "Music Assistant Pairing" only exists while MA's countdown runs, on a fresh random port each time. The phone app failed (first "Connecting…", then the device stopped appearing) without ever connecting to the Pi; the Spotify **desktop** app on the laptop paired first time. The web player can't pair. After pairing, **Save** the provider settings; until then plays fail with `spotify is not available`.
 
 **Bandcamp** (no account needed)
 
@@ -92,7 +96,9 @@ cp ma.env.example ma.env      # fill in MA_URL and the presto token
 ./ma.sh stop
 ```
 
-The `queue_id` equals the soundbar's `player_id` unless the bar is grouped. Success returns `null`; errors print MA's message and exit non-zero. Generated API docs: `http://<pi-ip>:8095/api-docs`.
+The `queue_id` equals the soundbar's `player_id` unless the bar is grouped. Success returns `null`; errors print MA's message and exit non-zero.
+
+`play_media` blocks while MA tries each track. When every track fails, it can take 30 s or more and then return HTTP 500 (`MediaNotFoundError: No playable item found`). The Presto's HTTP timeout should be about 60 s. A radio stream is a quick way to test Cast without Spotify: `./ma.sh play https://ice1.somafm.com/groovesalad-128-mp3`. Generated API docs: `http://<pi-ip>:8095/api-docs`.
 
 The Presto will send exactly this:
 
@@ -103,7 +109,15 @@ curl -sS http://<pi-ip>:8095/api \
        "args": {"queue_id": "<player_id>", "media": "spotify://album/<id>"}}'
 ```
 
-## 7. Wake test
+## 7. Beacon check
+
+`docker logs albumbox-beacon` shows the address it announces. To query it as the Presto will:
+
+```sh
+python3 -c 'import socket; s=socket.socket(2,2); s.setsockopt(1,6,1); s.settimeout(3); s.sendto(b"albumbox?",("255.255.255.255",50505)); print(s.recvfrom(256))'
+```
+
+## 8. Wake test
 
 ```sh
 ./wake_test.sh spotify://album/6EcqWi6PA9CbvtulGbEsPN "remote off, 2 min"

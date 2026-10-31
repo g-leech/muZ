@@ -17,6 +17,17 @@ services:
     environment:
       - LOG_LEVEL=info  # critical, error, warning, info, debug
 
+  # Broadcasts MA's address on UDP 50505 so the Presto finds the Pi without a fixed IP
+  # (Starlink's router has no DHCP reservations). See beacon.py.
+  beacon:
+    image: python:3.13-alpine
+    container_name: albumbox-beacon
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./beacon.py:/beacon.py:ro
+    command: ["python3", "-u", "/beacon.py"]
+
   # Only needed for the YouTube Music provider. MA's docs require version 1.2.1.
   # MA's default PO token server URL, http://127.0.0.1:4416, reaches this from host networking.
   po-token-server:

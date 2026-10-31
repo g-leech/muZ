@@ -56,7 +56,9 @@ Content-Type: application/json
 - Qwiic Button press or a screen tap: send the play command for the album on screen.
 - Swipe, or a timer (suggested: every 30 minutes): show the next cover.
 - LEDs: brief green on HTTP 200, red on failure or timeout.
-- `secrets.py` holds Wi-Fi SSID/password, MA URL, MA token and queue_id. Keep it out of git.
+- Finding the Pi: listen on UDP 50505 for `{"service": "albumbox", "url": "http://<ip>:8095"}` (broadcast every 5 s by `server/beacon.py`); at boot, broadcast `albumbox?` to 255.255.255.255:50505 for an immediate reply. Cache the last URL; switch when a different one arrives.
+- HTTP timeout for the play command: about 60 s (MA can take 30 s+ to fail when no track is playable, then returns HTTP 500).
+- `secrets.py` holds Wi-Fi SSID/password, MA token, queue_id and an optional fallback MA URL. Keep it out of git.
 
 ## Covers
 
@@ -70,7 +72,7 @@ Content-Type: application/json
 ## Known risks: test these before writing firmware
 
 1. **Soundbar wake.** The Q990F powers down after 18 minutes without an audio signal. A Q990D owner on Samsung's forum reported having to switch it on by hand before every Chromecast session. Test: put the Q990F in standby, send the play command with curl, see whether it wakes. If it doesn't, add a wake step on the Pi before casting: HDMI-CEC from the Pi into one of the Q990F's HDMI inputs (untested on this model), or a BroadLink RM4 mini IR blaster driven by python-broadlink (assumes the remote is infrared).
-2. **Wi-Fi dropouts.** MA streams with only about 2 s of buffer, so Wi-Fi faults become audible. Wire the Pi, put the soundbar on 5 GHz, and keep everything on one flat network (no guest Wi-Fi, client isolation or IoT VLAN between them). Give the Pi a DHCP reservation so the Presto's hard-coded URL keeps working.
+2. **Wi-Fi dropouts.** MA streams with only about 2 s of buffer, so Wi-Fi faults become audible. Wire the Pi, put the soundbar on 5 GHz, and keep everything on one flat network (no guest Wi-Fi, client isolation or IoT VLAN between them). The Starlink router can't reserve addresses, so the Pi's IP may change; the Presto finds it via the beacon (see Device behaviour).
 3. **Cast playback stops mid-track.** MA's Cast page: keep the HTTP profile at "Profile 2 - no content length", set the output codec to MP3; if it still fails, try "Profile 1 - chunked".
 4. **Fallback for Spotify** if Cast over Wi-Fi stays flaky: start playback on the soundbar's own Spotify Connect via the Web API (`PUT /v1/me/player/play` with `context_uri` and `device_id`). Since 2026, development-mode apps need a Premium owner and allow at most 5 users, refresh tokens expire 6 months after authorisation, and the soundbar must appear in `GET /me/player/devices` while idle.
 
