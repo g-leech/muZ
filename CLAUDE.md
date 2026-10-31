@@ -53,8 +53,8 @@ Content-Type: application/json
 
 - On boot: connect to Wi-Fi (reconnect if it drops), find the Pi, download `albums.json` from it, show a random cover.
 - Shuffle-bag: no repeats until every album has been shown, then reshuffle.
-- Screen tap: play the album on screen. (Qwiic Button dropped for now.)
-- Swipe left/right: next/previous cover; swipe up/down: next/previous track (`player_queues/next`, `player_queues/previous`). Timer: next cover every 30 minutes.
+- Screen tap: play the album on screen and keep it there: the 30-minute timer stops until the next left/right swipe. Only a successful play command does this. (Qwiic Button dropped for now.)
+- Swipe left/right: next/previous cover; swipe up/down: next/previous track (`player_queues/next`, `player_queues/previous`). Timer: next cover every 30 minutes, unless a tap has kept the cover on screen; a left/right swipe restarts it.
 - Bottom bar: ▶ (drawn as a triangle) and "Title - Artist" while the soundbar plays, polled every 5 s via `players/get`. ASCII only; common accents are folded.
 - Prefetch: next 15 covers downloaded, next 3 decoded, last 2 kept decoded; a swipe is a ~100 ms copy (decode alone is ~300 ms).
 - LEDs: brief green on HTTP 200, red on failure or timeout.

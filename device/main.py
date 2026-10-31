@@ -3,12 +3,12 @@
 # Covers and the album list come from the Pi over Wi-Fi (server/docker-compose.yml,
 # "covers" service); the Pi's address comes from its UDP beacon (server/beacon.py).
 #
-#   tap               play the album on screen
-#   swipe left        next cover (decoded ahead; spinner if it isn't ready)
-#   swipe right       previous cover
+#   tap               play the album on screen and keep it there (stops the timer below)
+#   swipe left        next cover (decoded ahead; spinner if it isn't ready); restarts the timer
+#   swipe right       previous cover; restarts the timer
 #   swipe up          next track on the soundbar
 #   swipe down        previous track
-#   every 30 minutes  next cover
+#   every 30 minutes  next cover, unless a tap has kept the playing album on screen
 #
 # Bottom bar: the track the soundbar is playing, polled from Music Assistant.
 # LEDs: amber while a command is in flight, then green (ok) or red (failed).
@@ -481,6 +481,7 @@ def main():
     playing = ""          # bottom bar text
     next_poll = time.ticks_ms()
     last_change = time.time()
+    pinned = False        # a tap started this album: keep it on screen, no timer
     touch_start = None    # (x, y) where the current touch began
     swiped = False        # the current touch has already acted as a swipe
     idle_from = time.ticks_ms()  # background work waits until touches have settled
@@ -536,18 +537,21 @@ def main():
             # Act on a swipe as soon as the finger has moved far enough, not on release.
             if not swiped and max(abs(dx), abs(dy)) >= SWIPE_PX:
                 swiped = True
-                if abs(dx) >= abs(dy):
-                    go_next() if dx < 0 else go_back()   # swipe left / right
+                if abs(dx) >= abs(dy):                   # swipe left / right
+                    pinned = False                       # back to the timed loop
+                    last_change = time.time()            # (counts even with no history to go back to)
+                    go_next() if dx < 0 else go_back()
                 else:                                    # swipe up/down: next/previous track
                     command = "player_queues/next" if dy < 0 else "player_queues/previous"
                     command_with_leds(urls, command, {"queue_id": secrets.QUEUE_ID}, 10)
                     next_poll = time.ticks_add(time.ticks_ms(), 1000)
         elif touch_start is not None:
             touch_start = None
-            if not swiped:                               # tap: play the album
-                command_with_leds(urls, "player_queues/play_media",
-                                  {"queue_id": secrets.QUEUE_ID, "media": albums[current]["uri"]},
-                                  PLAY_TIMEOUT_S)
+            if not swiped:                               # tap: play the album, keep it on screen
+                if command_with_leds(urls, "player_queues/play_media",
+                                     {"queue_id": secrets.QUEUE_ID, "media": albums[current]["uri"]},
+                                     PLAY_TIMEOUT_S):
+                    pinned = True
                 next_poll = time.ticks_add(time.ticks_ms(), 1000)
 
         if pending is None and touch_start is None:
@@ -565,7 +569,7 @@ def main():
                     print("prefetch:", e)
                     idle_from = time.ticks_add(time.ticks_ms(), 5000)
 
-        if time.time() - last_change > NEXT_AFTER_S:
+        if not pinned and time.time() - last_change > NEXT_AFTER_S:
             go_next()
 
         time.sleep_ms(20)
