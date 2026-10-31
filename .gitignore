@@ -1,3 +1,4 @@
 server/ma.env
 device/secrets.py
 device/covers/
+device/albums.json
