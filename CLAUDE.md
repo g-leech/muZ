@@ -53,12 +53,22 @@ Content-Type: application/json
 
 - On boot: connect to Wi-Fi (reconnect if it drops), find the Pi, download `albums.json` from it, show a random cover.
 - Shuffle-bag: no repeats until every album has been shown, then reshuffle.
-- Qwiic Button press or a screen tap: send the play command for the album on screen.
-- Swipe, or a timer (suggested: every 30 minutes): show the next cover.
+- Screen tap: play the album on screen. (Qwiic Button dropped for now.)
+- Swipe left/right: next/previous cover; swipe up/down: next/previous track (`player_queues/next`, `player_queues/previous`). Timer: next cover every 30 minutes.
+- Bottom bar: ▶ (drawn as a triangle) and "Title - Artist" while the soundbar plays, polled every 5 s via `players/get`. ASCII only; common accents are folded.
+- Prefetch: next 15 covers downloaded, next 3 decoded, last 2 kept decoded; a swipe is a ~100 ms copy (decode alone is ~300 ms).
 - LEDs: brief green on HTTP 200, red on failure or timeout.
 - Finding the Pi: listen on UDP 50505 for `{"service": "albumbox", "url": "http://<ip>:8095", "covers": "http://<ip>:8099"}` (broadcast every 5 s by `server/beacon.py`); at boot, broadcast `albumbox?` to 255.255.255.255:50505 for an immediate reply. Cache the last URL; switch when a different one arrives.
 - HTTP timeout for the play command: about 60 s (MA can take 30 s+ to fail when no track is playable, then returns HTTP 500).
-- `secrets.py` holds Wi-Fi SSID/password, MA token, queue_id and an optional fallback MA URL. Keep it out of git.
+- `secrets.py` holds Wi-Fi SSID/password, MA token, queue_id and optional fallback MA and cover URLs. Keep it out of git.
+
+### Presto firmware: what we learned (31 October 2026)
+
+- **Stay on v0.1.0** (March 2025). v2.0.0 (August 2026) was tried and dropped on this unit: Wi-Fi reconnects hung at "connecting", the device froze at startup, and `r.content`/`r.json()` became very slow (65 s for the 278 KB `albums.json`). Firmware files are in `~/presto-fw/` on the Pi.
+- **Never call `display.set_framebuffer()`** on the main display. It led to memory corruption: snow on screen, lost globals, hard freezes. To draw off-screen, give each spare buffer its own `PicoGraphics(DISPLAY_PRESTO_FULL_RES, buffer=..., pen_type=PEN_RGB565)` and copy into `memoryview(display)`.
+- **Read HTTP bodies in 4 KB chunks** (`r.raw.read(4096)`), never `r.content`/`r.json()`.
+- `Presto(full_res=True)` for 480×480; JPEG decode is ~300 ms, `presto.update()` ~24 ms.
+- Install and debug with `mpremote` (`~/.venvs/mpremote/bin/mpremote`). If the Presto hangs in C code, USB stops responding: power-cycle it. To stop `main.py` running at boot, hold BOOT while powering on and reflash the with-filesystem UF2, or rename `main.py` while you still have a REPL.
 
 ## Covers
 
@@ -78,7 +88,7 @@ Content-Type: application/json
 1. `server/docker-compose.yml` and `server/SETUP.md`: MA install, Spotify provider, Google Cast provider, creating the token.
 2. `server/wake_test.sh`: curl the play command with the soundbar in standby; record whether it wakes.
 3. `tools/prep_covers.py` (Python 3 + Pillow, run on the Pi) → `device/covers/*.jpg` and `device/albums.json`, served on port 8099.
-4. `device/main.py` (Presto MicroPython): display, shuffle-bag, Qwiic Button over I²C, touch, POST to MA, LEDs, Wi-Fi reconnect. Check Pimoroni's current Presto firmware and examples for the display, touch, LED and JPEG APIs before writing code.
+4. `device/main.py` (Presto MicroPython): display, shuffle-bag, touch, POST to MA, LEDs, Wi-Fi reconnect, now-playing bar, prefetch. Done; see the firmware notes under Device behaviour before changing it.
 
 ## Parts list (The Pi Hut prices, October 2026)
 

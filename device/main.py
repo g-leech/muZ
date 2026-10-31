@@ -4,7 +4,7 @@
 # "covers" service); the Pi's address comes from its UDP beacon (server/beacon.py).
 #
 #   tap               play the album on screen
-#   swipe left        next cover            (spinner while it loads)
+#   swipe left        next cover (decoded ahead; spinner if it isn't ready)
 #   swipe right       previous cover
 #   swipe up          next track on the soundbar
 #   swipe down        previous track
@@ -12,7 +12,8 @@
 #
 # Bottom bar: the track the soundbar is playing, polled from Music Assistant.
 # LEDs: amber while a command is in flight, then green (ok) or red (failed).
-# Written for Pimoroni's Presto firmware v0.1.0 (MicroPython 1.25 preview).
+# Written for Pimoroni's Presto firmware v0.1.0 (MicroPython 1.25 preview). v2.0.0 was tried
+# and dropped: unreliable Wi-Fi reconnects and freezes on this unit.
 
 import gc
 import json
@@ -25,7 +26,7 @@ import time
 import jpegdec
 import network
 import requests
-from presto import Presto
+from presto import DISPLAY_PRESTO_FULL_RES, PEN_RGB565, PicoGraphics, Presto
 
 import secrets
 
@@ -218,23 +219,29 @@ def ensure_wifi():
     return wlan.isconnected()
 
 
+def read_body(r, on_chunk=None):
+    """Read a response body in 4 KB chunks. On firmware v2.0.0, r.content and r.json()
+    (one unbounded read) are slow and get worse with size: 65 s for the 278 KB albums.json,
+    against 0.35 s chunked. on_chunk(n) is called after each chunk (for the spinner)."""
+    parts, n = [], 0
+    while True:
+        chunk = r.raw.read(4096)
+        if not chunk:
+            break
+        parts.append(chunk)
+        n += 1
+        if on_chunk is not None:
+            on_chunk(n)
+    return b"".join(parts)
+
+
 def http_get(url, timeout=15, on_chunk=None):
-    """GET url into bytes. on_chunk(n) is called between 4 KB reads (for the spinner)."""
+    """GET url into bytes."""
     r = requests.get(url, timeout=timeout)
     try:
         if r.status_code != 200:
             raise OSError("HTTP %d for %s" % (r.status_code, url))
-        if on_chunk is None:
-            return r.content
-        parts, n = [], 0
-        while True:
-            chunk = r.raw.read(4096)
-            if not chunk:
-                break
-            parts.append(chunk)
-            n += 1
-            on_chunk(n)
-        return b"".join(parts)
+        return read_body(r, on_chunk)
     finally:
         r.close()
 
@@ -248,9 +255,9 @@ def ma(urls, command, args, timeout=10):
                       timeout=timeout)
     try:
         if r.status_code != 200:
-            print(command, "failed:", r.status_code, r.text[:200])
+            print(command, "failed:", r.status_code, read_body(r)[:200])
             return False, None
-        return True, r.json()
+        return True, json.loads(read_body(r))
     finally:
         r.close()
 
@@ -285,6 +292,14 @@ def command_with_leds(urls, command, args, timeout):
 
 # ---------- covers ----------
 
+FRAME_BYTES = WIDTH * HEIGHT * 2          # one decoded cover, RGB565
+STRIP_OFF = (HEIGHT - BAR_H) * WIDTH * 2  # where the bottom bar starts in a frame
+AHEAD_JPEGS = 15                          # covers downloaded ahead
+AHEAD_FRAMES = 3                          # covers decoded ahead
+BEHIND_FRAMES = 2                         # recent covers kept decoded, for swipe right
+POOL = AHEAD_FRAMES + BEHIND_FRAMES + 2   # frame buffers: those, the one on screen, a spare
+
+
 class Bag:
     """Shuffle-bag: every album once, in random order, then reshuffle."""
 
@@ -301,13 +316,117 @@ class Bag:
         return self.order.pop()
 
 
-def render(cover, playing):
-    jpeg.open_RAM(cover)
-    display.set_pen(BLACK)
-    display.clear()
-    jpeg.decode(0, 0, jpegdec.JPEG_SCALE_FULL, dither=False)
-    draw_bar(playing)
-    presto.update()
+class Slot:
+    """A spare frame buffer with its own PicoGraphics and JPEG decoder.
+
+    The display's own buffer is never swapped out with set_framebuffer(): on firmware
+    v2.0.0 that let the firmware keep writing to the freed original buffer, corrupting
+    memory (snow on screen, lost variables, freezes). Instead each spare buffer gets its
+    own PicoGraphics, and a decoded cover is copied into the display's buffer.
+    """
+
+    def __init__(self):
+        self.buf = bytearray(FRAME_BYTES)
+        self.pg = PicoGraphics(DISPLAY_PRESTO_FULL_RES, buffer=self.buf, layers=1, pen_type=PEN_RGB565)
+        self.jpeg = jpegdec.JPEG(self.pg)
+
+
+class Covers:
+    """Downloads and decodes covers ahead of time, so a swipe is a ~90 ms copy.
+
+    jpegs:  album index -> JPEG bytes (upcoming covers and a few recent ones)
+    frames: album index -> Slot holding that cover decoded. Frames stay clean; the
+            bottom bar and spinner are drawn only on the display's buffer.
+    """
+
+    def __init__(self, urls, albums, n_frames):
+        self.urls, self.albums = urls, albums
+        self.pool = []
+        for _ in range(n_frames):
+            self.pool.append(Slot())
+        self.screen = memoryview(display)  # the display's own buffer
+        self.frames = {}
+        self.jpegs = {}
+        self.current = None  # album index on screen
+        self.bar = False     # bar drawn on screen
+
+    def jpeg_for(self, i, on_chunk=None):
+        data = self.jpegs.get(i)
+        if data is None:
+            data = http_get(self.urls["covers"] + "/" + self.albums[i]["cover"], on_chunk=on_chunk)
+            self.jpegs[i] = data
+        return data
+
+    def _free_slot(self, keep):
+        used = list(self.frames.values())
+        for s in self.pool:
+            if not any(s is u for u in used):
+                return s
+        for i in list(self.frames):
+            if i not in keep and i != self.current:
+                return self.frames.pop(i)
+        return None
+
+    def decode(self, i, keep):
+        if i in self.frames:
+            return True
+        slot = self._free_slot(keep)
+        if slot is None:
+            return False
+        data = self.jpeg_for(i)
+        slot.jpeg.open_RAM(data)
+        slot.jpeg.decode(0, 0, jpegdec.JPEG_SCALE_FULL, dither=False)
+        self.frames[i] = slot
+        return True
+
+    def show(self, i, keep, playing):
+        if i not in self.frames:
+            # Not ready yet: spinner while it downloads, then decode.
+            spinner(0)
+            self.jpeg_for(i, on_chunk=spinner)
+            if not self.decode(i, keep | {i}):
+                raise MemoryError("no free frame buffer")
+        self.screen[:] = self.frames[i].buf
+        self.current = i
+        self.bar = False
+        self.set_bar(playing, push=False)
+        presto.update()
+
+    def set_bar(self, playing, push=True):
+        if self.current not in self.frames:
+            return
+        if playing:
+            draw_bar(playing)
+            self.bar = True
+        elif self.bar:
+            self.screen[STRIP_OFF:] = memoryview(self.frames[self.current].buf)[STRIP_OFF:]
+            self.bar = False
+        else:
+            return
+        if push:
+            presto.partial_update(0, HEIGHT - BAR_H, WIDTH, BAR_H)
+
+    def work(self, upcoming, history):
+        """Do one piece of background work (one download or one decode). False if none left."""
+        keep = set(upcoming[:AHEAD_FRAMES]) | set(history[-BEHIND_FRAMES:])
+        for i in upcoming[:AHEAD_FRAMES] + history[-BEHIND_FRAMES:][::-1]:
+            if i not in self.frames:
+                if i not in self.jpegs:
+                    self.jpeg_for(i)
+                    return True
+                if self.decode(i, keep):
+                    return True
+        for i in upcoming[:AHEAD_JPEGS]:
+            if i not in self.jpegs:
+                self.jpeg_for(i)
+                return True
+        return False
+
+    def prune(self, upcoming, history):
+        keep = set(upcoming[:AHEAD_JPEGS]) | set(history[-BEHIND_FRAMES:]) | {self.current}
+        for i in list(self.jpegs):
+            if i not in keep:
+                del self.jpegs[i]
 
 
 # ---------- main loop ----------
@@ -341,40 +460,54 @@ def main():
             if read_beacon(beacon, urls):
                 save_urls(urls)
     gc.collect()
-    print(len(albums), "albums; free RAM", gc.mem_free())
+
+    covers = None
+    for n in range(POOL, 2, -1):  # as many frame buffers as fit
+        try:
+            covers = Covers(urls, albums, n)
+            break
+        except MemoryError:
+            covers = None
+            gc.collect()
+    gc.collect()
+    print(len(albums), "albums;", len(covers.pool), "frame buffers; free RAM", gc.mem_free())
 
     bag = Bag(len(albums))
-    history = []          # indices shown before the current one
-    current = bag.next()
-    cover = None          # JPEG bytes of the cover on screen, kept for redraws
-    need_cover = True
-    spin = False          # show the spinner while the next cover downloads
+    upcoming = [bag.next() for _ in range(AHEAD_JPEGS)]
+    history = []          # covers shown before the current one
+    current = upcoming.pop(0)
+    upcoming.append(bag.next())
+    pending = current     # cover to put on screen, or None
     playing = ""          # bottom bar text
     next_poll = time.ticks_ms()
     last_change = time.time()
     touch_start = None    # (x, y) where the current touch began
     swiped = False        # the current touch has already acted as a swipe
+    idle_from = time.ticks_ms()  # background work waits until touches have settled
 
-    def next_cover():
-        nonlocal current, need_cover, spin
+    def go_next():
+        nonlocal current, pending
         history.append(current)
         del history[:-HISTORY]
-        current = bag.next()
-        need_cover = spin = True
+        current = upcoming.pop(0)
+        upcoming.append(bag.next())
+        pending = current
+
+    def go_back():
+        nonlocal current, pending
+        if history:
+            upcoming.insert(0, current)
+            current = history.pop()
+            pending = current
 
     while True:
-        if need_cover:
+        if pending is not None:
             try:
-                tick = spinner if spin else None
-                if spin:
-                    spinner(0)
-                data = http_get(urls["covers"] + "/" + albums[current]["cover"], on_chunk=tick)
-                cover = None
-                gc.collect()
-                cover = data
-                render(cover, playing)
-                need_cover = spin = False
+                keep = set(upcoming[:AHEAD_FRAMES]) | set(history[-BEHIND_FRAMES:])
+                covers.show(pending, keep, playing)
+                pending = None
                 last_change = time.time()
+                covers.prune(upcoming, history)
             except Exception as e:
                 print("cover:", e)
                 if not ensure_wifi():
@@ -395,6 +528,7 @@ def main():
         presto.touch_poll()
         x, y, down = presto.touch_a
         if down:
+            idle_from = time.ticks_add(time.ticks_ms(), 400)
             if touch_start is None:
                 touch_start = (x, y)
                 swiped = False
@@ -403,36 +537,36 @@ def main():
             if not swiped and max(abs(dx), abs(dy)) >= SWIPE_PX:
                 swiped = True
                 if abs(dx) >= abs(dy):
-                    if dx < 0:                        # swipe left: next cover
-                        next_cover()
-                    elif history:                     # swipe right: previous cover
-                        current = history.pop()
-                        need_cover = spin = True
-                    if need_cover:
-                        spinner(0)                    # instant feedback
-                else:                                 # swipe up/down: next/previous track
+                    go_next() if dx < 0 else go_back()   # swipe left / right
+                else:                                    # swipe up/down: next/previous track
                     command = "player_queues/next" if dy < 0 else "player_queues/previous"
                     command_with_leds(urls, command, {"queue_id": secrets.QUEUE_ID}, 10)
                     next_poll = time.ticks_add(time.ticks_ms(), 1000)
         elif touch_start is not None:
             touch_start = None
-            if not swiped:                            # tap: play the album
+            if not swiped:                               # tap: play the album
                 command_with_leds(urls, "player_queues/play_media",
                                   {"queue_id": secrets.QUEUE_ID, "media": albums[current]["uri"]},
                                   PLAY_TIMEOUT_S)
                 next_poll = time.ticks_add(time.ticks_ms(), 1000)
 
-        if touch_start is None and time.ticks_diff(time.ticks_ms(), next_poll) >= 0:
-            text = now_playing(urls)
-            if text is not None and text != playing:
-                playing = text
-                if cover is not None and not need_cover:
-                    render(cover, playing)
-            next_poll = time.ticks_add(time.ticks_ms(), POLL_S * 1000)
+        if pending is None and touch_start is None:
+            if time.ticks_diff(time.ticks_ms(), next_poll) >= 0:
+                text = now_playing(urls)
+                if text is not None and text != playing:
+                    playing = text
+                    covers.set_bar(playing)
+                next_poll = time.ticks_add(time.ticks_ms(), POLL_S * 1000)
+            elif time.ticks_diff(time.ticks_ms(), idle_from) >= 0:
+                try:
+                    if not covers.work(upcoming, history):
+                        idle_from = time.ticks_add(time.ticks_ms(), 1000)
+                except Exception as e:
+                    print("prefetch:", e)
+                    idle_from = time.ticks_add(time.ticks_ms(), 5000)
 
         if time.time() - last_change > NEXT_AFTER_S:
-            next_cover()
-            spin = False
+            go_next()
 
         time.sleep_ms(20)
 
